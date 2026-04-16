@@ -1,0 +1,25 @@
+#!/bin/bash
+#### Ansible Managed Script ####
+# Copies renewed certificate to the pgbouncer TLS directory and reloads
+# the service.  Called automatically by certbot after every successful
+# issuance or renewal (renewal-hooks/deploy/), and also placed in
+# cron.monthly on backup peers to ensure the service picks up the cert
+# received via rsync.
+
+DOMAIN="{{ pgbouncer_domain_name }}"
+TLS_DIR="{{ pgbouncer_tls_dir }}"
+CERT_SRC="/etc/letsencrypt/live/${DOMAIN}"
+
+# Only copy when this host holds the letsencrypt directory (master).
+# On backup peers the cert files are synced directly into TLS_DIR by the
+# master's sync-certificates script, so no copy is needed here.
+if [ -d "${CERT_SRC}" ]; then
+    cp "${CERT_SRC}/fullchain.pem" "${TLS_DIR}/fullchain.pem"
+    cp "${CERT_SRC}/privkey.pem"   "${TLS_DIR}/privkey.pem"
+    chown postgres:postgres "${TLS_DIR}/fullchain.pem" "${TLS_DIR}/privkey.pem"
+    chmod 640 "${TLS_DIR}/fullchain.pem"
+    chmod 600 "${TLS_DIR}/privkey.pem"
+fi
+
+# Reload if already running, start if not (handles first-run ordering).
+systemctl reload pgbouncer 2>/dev/null || systemctl start pgbouncer

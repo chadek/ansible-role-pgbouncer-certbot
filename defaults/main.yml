@@ -1,0 +1,119 @@
+---
+# defaults file for ansible-role-pgbouncer-certbot
+
+# ---------------------------------------------------------------------------
+# PgBouncer configuration — maps 1:1 to pgbouncer.ini sections.
+# Keys under [databases] are pgbouncer connection strings.
+# Keys under [pgbouncer] are standard pgbouncer options.
+# Add any pgbouncer parameter here; the template renders everything generically.
+# ---------------------------------------------------------------------------
+pgbouncer_conf:
+  databases: {}
+  pgbouncer:
+    listen_addr: "*"
+    listen_port: 5432
+    auth_type: scram-sha-256
+    auth_file: /etc/pgbouncer/userlist.txt
+    admin_users: pgbouncer_admin
+    stats_users: pgbouncer_stats
+    pool_mode: session
+    max_client_conn: 100
+    default_pool_size: 20
+    server_reset_query: DISCARD ALL
+    logfile: /var/log/postgresql/pgbouncer.log
+    pidfile: /var/run/postgresql/pgbouncer.pid
+
+# ---------------------------------------------------------------------------
+# Users for /etc/pgbouncer/userlist.txt — list of { name, password }.
+# Passwords are stored as plaintext; pgbouncer needs them to perform the
+# SCRAM-SHA-256 exchange with the backend managed database.
+# Retrieve them at deploy time from Vaultwarden; never store them in git.
+# ---------------------------------------------------------------------------
+pgbouncer_users: []
+# Example (password pulled from Vaultwarden via vault_collections):
+# pgbouncer_users:
+#   - name: app_user
+#     password: "{{ ((vault_collections | selectattr('name', 'equalto', 'vault_pgbouncer_app_user') | first)).login.password }}"
+
+# ---------------------------------------------------------------------------
+# TLS certificate management — controls file deployment, not pgbouncer.ini.
+# To enable TLS, also add client_tls_* keys to pgbouncer_conf.pgbouncer.
+# ---------------------------------------------------------------------------
+pgbouncer_tls_enabled: false
+# 'certbot' — obtain a certificate via DNS challenge
+# 'provided' — supply your own certificate files
+pgbouncer_tls_cert_mode: certbot
+
+pgbouncer_tls_dir: /etc/pgbouncer/ssl
+pgbouncer_tls_cert_file: "{{ pgbouncer_tls_dir }}/fullchain.pem"
+pgbouncer_tls_key_file: "{{ pgbouncer_tls_dir }}/privkey.pem"
+
+# Source paths for 'provided' cert mode (copied from controller by default).
+# Set pgbouncer_tls_provided_remote_src: true when files are already on the remote.
+# pgbouncer_tls_provided_cert: /path/to/cert.pem
+# pgbouncer_tls_provided_key: /path/to/key.pem
+# pgbouncer_tls_provided_ca: /path/to/ca.pem
+
+# Server-side CA certificate used by pgbouncer to verify the managed database's
+# TLS certificate (needed when server_tls_sslmode is verify-ca or verify-full).
+# This is separate from the client cert above: it authenticates the *backend*, not the client.
+pgbouncer_tls_server_ca_enabled: false
+pgbouncer_tls_server_ca_dest: "{{ pgbouncer_tls_dir }}/server-ca.pem"
+
+# How to source the CA certificate — choose one:
+#
+#   'url'     — download from a provider-published URL.
+#               CA bundles are public; no secret management needed.
+#               Examples:
+#                 AWS RDS:  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+#                 OVH DBaaS: check your provider's documentation
+#
+#   'content' — write from an inline variable.
+#               Suitable for corporate/internal CAs.
+#               The cert is not secret (it is a public key), so group_vars is fine.
+#               For centralised management it can also be stored in Vaultwarden
+#               as a secure note and referenced via vault_collections:
+#                 pgbouncer_tls_server_ca_content: >-
+#                   {{ ((vault_collections
+#                        | selectattr('name', 'equalto', 'vault_pgbouncer_server_ca')
+#                        | first)).notes }}
+#
+#   'file'    — copy from a filesystem path.
+#               Use remote_src: true when the file is already on the target host.
+#
+pgbouncer_tls_server_ca_mode: url
+# pgbouncer_tls_server_ca_url: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+# pgbouncer_tls_server_ca_content: |
+#   -----BEGIN CERTIFICATE-----
+#   ...
+# pgbouncer_tls_server_ca_src: /path/to/ca.pem
+# pgbouncer_tls_server_ca_remote_src: false
+
+# ---------------------------------------------------------------------------
+# Certbot settings (used when pgbouncer_tls_cert_mode == 'certbot')
+# ---------------------------------------------------------------------------
+pgbouncer_domain_name: db.example.com
+pgbouncer_certbot_email: some.mail@example.com
+
+# DNS challenge provider — maps to apt package python3-certbot-dns-<provider>
+# pgbouncer_certbot_dns_provider: ovh
+
+# Credentials file content for the DNS provider (INI format, provider-specific).
+# Stored in /etc/letsencrypt/dns-credentials/<provider>.ini with mode 0600.
+# pgbouncer_certbot_dns_credentials: |
+#   dns_ovh_endpoint = ovh-eu
+#   dns_ovh_application_key = xxxxx
+
+pgbouncer_certbot_dns_propagation_seconds: 30
+
+# ---------------------------------------------------------------------------
+# Certificate sync for load-balanced environments.
+# Set pgbouncer_share_cert on every host that shares the certificate:
+#   master — runs certbot, syncs /etc/pgbouncer/ssl/ to peers after each renewal
+#   backup — receives the synced files via rrsync, reloads pgbouncer monthly
+#
+# pgbouncer_share_cert:
+#   state: master        # or 'backup'
+#   peers:
+#     - 192.168.1.2
+# ---------------------------------------------------------------------------

@@ -1,0 +1,150 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      when: ansible_os_family == 'Debian'
+      changed_when: false
+
+    - name: Install PostgreSQL
+      ansible.builtin.package:
+        name: postgresql
+        state: present
+
+    - name: Start PostgreSQL service
+      ansible.builtin.systemd:
+        name: postgresql
+        state: started
+        enabled: true
+
+    # Use scram-sha-256 for all new passwords — mirrors a managed DB default.
+    - name: Set password_encryption to scram-sha-256
+      ansible.builtin.command: >-
+        psql -U postgres -c "ALTER SYSTEM SET password_encryption = 'scram-sha-256';"
+      become_user: postgres
+      changed_when: true
+
+    - name: Find pg_hba.conf
+      ansible.builtin.find:
+        paths: /etc/postgresql
+        patterns: pg_hba.conf
+        recurse: true
+      register: pg_hba_find
+
+    # Require scram-sha-256 for TCP connections (as a managed DB would).
+    # Keep peer auth on local sockets so Ansible psql tasks can still run as postgres.
+    - name: Configure pg_hba.conf
+      ansible.builtin.copy:
+        dest: "{{ pg_hba_find.files[0].path }}"
+        content: |
+          local   all   postgres   peer
+          local   all   all        peer
+          host    all   all        127.0.0.1/32   scram-sha-256
+          host    all   all        ::1/128        scram-sha-256
+        owner: postgres
+        group: postgres
+        mode: '0640'
+
+    # --- PostgreSQL server TLS (pgbouncer-tls-provided only) ----------------
+    # pgbouncer connects with server_tls_sslmode: verify-full, so PostgreSQL
+    # must present a TLS certificate that pgbouncer can verify against a CA.
+    # A self-signed cert serves as both the server cert and the CA cert here.
+    - name: Create PostgreSQL SSL directory
+      ansible.builtin.file:
+        path: /etc/postgresql/ssl
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Generate self-signed certificate for PostgreSQL server
+      ansible.builtin.command: >-
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/postgresql/ssl/server.key
+        -out /etc/postgresql/ssl/server.crt
+        -subj "/CN=127.0.0.1"
+      changed_when: true
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Set ownership and permissions on PostgreSQL SSL files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: postgres
+        group: postgres
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/postgresql/ssl/server.crt, mode: '0644'}
+        - {path: /etc/postgresql/ssl/server.key, mode: '0600'}
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Configure PostgreSQL to use generated TLS certificate
+      ansible.builtin.command: >-
+        psql -U postgres
+        -c "ALTER SYSTEM SET ssl = 'on';"
+        -c "ALTER SYSTEM SET ssl_cert_file = '/etc/postgresql/ssl/server.crt';"
+        -c "ALTER SYSTEM SET ssl_key_file  = '/etc/postgresql/ssl/server.key';"
+      become_user: postgres
+      changed_when: true
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+    # ------------------------------------------------------------------------
+
+    # Single restart applies password_encryption, ssl settings, and pg_hba.conf.
+    - name: Restart PostgreSQL to apply all settings
+      ansible.builtin.systemd:
+        name: postgresql
+        state: restarted
+
+    - name: Create testuser in PostgreSQL
+      ansible.builtin.command: >-
+        psql -U postgres -c
+        "CREATE USER testuser WITH PASSWORD 'correcthorsebatterystaple';"
+      become_user: postgres
+      register: create_user
+      changed_when: "'CREATE ROLE' in create_user.stdout"
+      failed_when: create_user.rc != 0 and 'already exists' not in create_user.stderr
+
+    - name: Create testdb in PostgreSQL
+      ansible.builtin.command: >-
+        psql -U postgres -c "CREATE DATABASE testdb OWNER testuser;"
+      become_user: postgres
+      register: create_db
+      changed_when: "'CREATE DATABASE' in create_db.stdout"
+      failed_when: create_db.rc != 0 and 'already exists' not in create_db.stderr
+
+    # The self-signed server cert is its own CA — pass it to the role as the
+    # server CA cert so pgbouncer can verify the backend with verify-full.
+    - name: Set server CA source fact for pgbouncer
+      ansible.builtin.set_fact:
+        pgbouncer_tls_server_ca_src: /etc/postgresql/ssl/server.crt
+        pgbouncer_tls_server_ca_remote_src: true
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    # Generate a self-signed certificate for the pgbouncer client TLS listener.
+    - name: Generate self-signed cert for pgbouncer TLS listener
+      ansible.builtin.command: >-
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /tmp/test.key -out /tmp/test.crt
+        -subj "/CN=db.example.com"
+      changed_when: true
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Set provided cert paths for TLS test
+      ansible.builtin.set_fact:
+        pgbouncer_tls_provided_cert: /tmp/test.crt
+        pgbouncer_tls_provided_key: /tmp/test.key
+        pgbouncer_tls_provided_remote_src: true
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+  roles:
+    - role: ansible-role-pgbouncer-certbot
+
+  post_tasks:
+    - name: Start pgbouncer service
+      ansible.builtin.systemd:
+        name: pgbouncer
+        state: started

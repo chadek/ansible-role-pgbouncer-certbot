@@ -1,0 +1,111 @@
+---
+- name: PgBouncer | Install pgbouncer package
+  ansible.builtin.package:
+    name: pgbouncer
+    state: present
+
+- name: PgBouncer | Create TLS directory
+  ansible.builtin.file:
+    path: "{{ pgbouncer_tls_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0750'
+  when: pgbouncer_tls_enabled or pgbouncer_tls_server_ca_enabled
+
+- name: PgBouncer | Deploy pgbouncer.ini configuration
+  ansible.builtin.template:
+    src: templates/pgbouncer.ini.j2
+    dest: /etc/pgbouncer/pgbouncer.ini
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Deploy userlist.txt
+  ansible.builtin.template:
+    src: templates/userlist.txt.j2
+    dest: "{{ pgbouncer_conf.pgbouncer.auth_file }}"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Copy provided TLS certificate
+  ansible.builtin.copy:
+    src: "{{ pgbouncer_tls_provided_cert }}"
+    dest: "{{ pgbouncer_tls_cert_file }}"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+    remote_src: "{{ pgbouncer_tls_provided_remote_src | default(false) }}"
+  when: >-
+    pgbouncer_tls_enabled
+    and pgbouncer_tls_cert_mode == 'provided'
+    and pgbouncer_tls_provided_cert is defined
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Copy provided TLS private key
+  ansible.builtin.copy:
+    src: "{{ pgbouncer_tls_provided_key }}"
+    dest: "{{ pgbouncer_tls_key_file }}"
+    owner: postgres
+    group: postgres
+    mode: '0600'
+    remote_src: "{{ pgbouncer_tls_provided_remote_src | default(false) }}"
+  when: >-
+    pgbouncer_tls_enabled
+    and pgbouncer_tls_cert_mode == 'provided'
+    and pgbouncer_tls_provided_key is defined
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Copy provided CA certificate
+  ansible.builtin.copy:
+    src: "{{ pgbouncer_tls_provided_ca }}"
+    dest: "{{ pgbouncer_tls_dir }}/ca.pem"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+    remote_src: "{{ pgbouncer_tls_provided_remote_src | default(false) }}"
+  when: >-
+    pgbouncer_tls_enabled
+    and pgbouncer_tls_cert_mode == 'provided'
+    and pgbouncer_tls_provided_ca is defined
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Download server CA certificate from URL
+  ansible.builtin.get_url:
+    url: "{{ pgbouncer_tls_server_ca_url }}"
+    dest: "{{ pgbouncer_tls_server_ca_dest }}"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  when:
+    - pgbouncer_tls_server_ca_enabled
+    - pgbouncer_tls_server_ca_mode == 'url'
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Deploy server CA certificate from inline content
+  ansible.builtin.copy:
+    content: "{{ pgbouncer_tls_server_ca_content }}"
+    dest: "{{ pgbouncer_tls_server_ca_dest }}"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  when:
+    - pgbouncer_tls_server_ca_enabled
+    - pgbouncer_tls_server_ca_mode == 'content'
+  notify: Reload pgbouncer
+
+- name: PgBouncer | Copy server CA certificate from file
+  ansible.builtin.copy:
+    src: "{{ pgbouncer_tls_server_ca_src }}"
+    dest: "{{ pgbouncer_tls_server_ca_dest }}"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+    remote_src: "{{ pgbouncer_tls_server_ca_remote_src | default(false) }}"
+  when:
+    - pgbouncer_tls_server_ca_enabled
+    - pgbouncer_tls_server_ca_mode == 'file'
+  notify: Reload pgbouncer

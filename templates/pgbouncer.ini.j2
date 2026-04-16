@@ -1,0 +1,13 @@
+; Ansible managed
+
+{% for section, params in pgbouncer_conf.items() %}
+[{{ section }}]
+{% for key, value in params.items() %}
+{% if value is boolean %}
+{{ key }} = {{ 'yes' if value else 'no' }}
+{% else %}
+{{ key }} = {{ value }}
+{% endif %}
+{% endfor %}
+
+{% endfor %}

@@ -1,0 +1,76 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  tasks:
+    - name: Check pgbouncer package is installed
+      ansible.builtin.package:
+        name: pgbouncer
+        state: present
+      check_mode: true
+      register: pkg_check
+      failed_when: pkg_check.changed
+
+    - name: Check pgbouncer.ini exists
+      ansible.builtin.stat:
+        path: /etc/pgbouncer/pgbouncer.ini
+      register: ini_stat
+      failed_when: not ini_stat.stat.exists
+
+    - name: Check userlist.txt exists
+      ansible.builtin.stat:
+        path: /etc/pgbouncer/userlist.txt
+      register: userlist_stat
+      failed_when: not userlist_stat.stat.exists
+
+    - name: Check pgbouncer.ini contains expected listen_port
+      ansible.builtin.command: >-
+        grep -q "listen_port = {{ pgbouncer_conf.pgbouncer.listen_port }}" /etc/pgbouncer/pgbouncer.ini
+      changed_when: false
+
+    - name: Check pgbouncer TLS directory exists on tls-provided host
+      ansible.builtin.stat:
+        path: /etc/pgbouncer/ssl
+      register: tls_dir_stat
+      failed_when: not tls_dir_stat.stat.exists
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Check fullchain.pem is deployed on tls-provided host
+      ansible.builtin.stat:
+        path: /etc/pgbouncer/ssl/fullchain.pem
+      register: cert_stat
+      failed_when: not cert_stat.stat.exists
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Check privkey.pem is deployed on tls-provided host
+      ansible.builtin.stat:
+        path: /etc/pgbouncer/ssl/privkey.pem
+      register: key_stat
+      failed_when: not key_stat.stat.exists
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Check pgbouncer.ini references TLS files on tls-provided host
+      ansible.builtin.command: grep -q "client_tls_sslmode" /etc/pgbouncer/pgbouncer.ini
+      changed_when: false
+      when: inventory_hostname == 'pgbouncer-tls-provided'
+
+    - name: Install postgresql-client for connection testing
+      ansible.builtin.package:
+        name: postgresql-client
+        state: present
+
+    - name: Test psql connection through pgbouncer (no TLS)
+      ansible.builtin.command: >-
+        psql "host=127.0.0.1 port={{ pgbouncer_conf.pgbouncer.listen_port }} dbname=testdb user=testuser" -c "SELECT 1 AS ok;"
+      environment:
+        PGPASSWORD: correcthorsebatterystaple
+      changed_when: false
+      when: inventory_hostname == 'pgbouncer-simple'
+
+    - name: Test psql connection through pgbouncer (TLS)
+      ansible.builtin.command: >-
+        psql "host=127.0.0.1 port={{ pgbouncer_conf.pgbouncer.listen_port }} dbname=testdb user=testuser sslmode=require" -c "SELECT 1 AS ok;"
+      environment:
+        PGPASSWORD: correcthorsebatterystaple
+      changed_when: false
+      when: inventory_hostname == 'pgbouncer-tls-provided'

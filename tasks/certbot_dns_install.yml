@@ -1,0 +1,117 @@
+---
+- name: PgBouncer Certbot | Install certbot
+  ansible.builtin.package:
+    name: certbot
+    state: present
+
+- name: PgBouncer Certbot | Install certbot DNS provider plugin
+  ansible.builtin.package:
+    name: "python3-certbot-dns-{{ pgbouncer_certbot_dns_provider }}"
+    state: present
+  when: pgbouncer_certbot_dns_provider is defined
+
+- name: PgBouncer Certbot | Create DNS credentials directory
+  ansible.builtin.file:
+    path: /etc/letsencrypt/dns-credentials
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when: pgbouncer_certbot_dns_credentials is defined
+
+- name: PgBouncer Certbot | Deploy DNS provider credentials
+  ansible.builtin.copy:
+    content: "{{ pgbouncer_certbot_dns_credentials }}"
+    dest: "/etc/letsencrypt/dns-credentials/{{ pgbouncer_certbot_dns_provider }}.ini"
+    owner: root
+    group: root
+    mode: '0600'
+  when: pgbouncer_certbot_dns_credentials is defined
+
+- name: PgBouncer Certbot | Ensure renewal-hooks directories exist
+  ansible.builtin.file:
+    path: "/etc/letsencrypt/renewal-hooks/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - deploy
+    - pre
+    - post
+
+# Deploy the hook first: certbot calls it automatically on issuance/renewal,
+# and we also invoke it explicitly below for the "cert already exists" idempotency case.
+- name: PgBouncer Certbot | Deploy cert deploy hook (copy to TLS dir + reload)
+  ansible.builtin.template:
+    src: templates/reload-pgbouncer.j2
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-pgbouncer.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: PgBouncer Certbot | Deploy cert sync hook (master only)
+  ansible.builtin.template:
+    src: templates/sync-certificates.j2
+    dest: /etc/letsencrypt/renewal-hooks/deploy/sync-certificates.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: pgbouncer_share_cert is defined and pgbouncer_share_cert.state == 'master'
+
+- name: PgBouncer Certbot | Check if letsencrypt certificate already exists
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ pgbouncer_domain_name }}/cert.pem"
+  register: letsencrypt_cert
+
+- name: PgBouncer Certbot | Check if pgbouncer TLS cert is already deployed
+  ansible.builtin.stat:
+    path: "{{ pgbouncer_tls_cert_file }}"
+  register: pgbouncer_tls_cert
+
+- name: PgBouncer Certbot | Generate certificate via DNS challenge
+  tags: notest
+  ansible.builtin.command: >-
+    certbot certonly
+    --dns-{{ pgbouncer_certbot_dns_provider }}
+    --dns-{{ pgbouncer_certbot_dns_provider }}-credentials /etc/letsencrypt/dns-credentials/{{ pgbouncer_certbot_dns_provider }}.ini
+    --dns-{{ pgbouncer_certbot_dns_provider }}-propagation-seconds {{ pgbouncer_certbot_dns_propagation_seconds }}
+    --noninteractive --agree-tos
+    --email {{ pgbouncer_certbot_email }}
+    -d {{ pgbouncer_domain_name }}
+  register: certbot_output
+  changed_when: certbot_output.rc == 0
+  when: >-
+    not letsencrypt_cert.stat.exists
+    and pgbouncer_certbot_dns_provider is defined
+    and pgbouncer_share_cert.state | default('master') == 'master'
+  notify: Sync cert
+  # certbot automatically runs renewal-hooks/deploy/* after successful issuance,
+  # so reload-pgbouncer.sh (and sync-certificates.sh) are called by certbot itself.
+
+- name: PgBouncer Certbot | Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: PgBouncer Certbot | Log certbot output
+  tags: notest
+  ansible.builtin.lineinfile:
+    dest: /var/log/certbot-pgbouncer.log
+    line: "{{ certbot_output }}"
+    create: true
+    mode: '0644'
+    insertafter: EOF
+  when: >-
+    not letsencrypt_cert.stat.exists
+    and pgbouncer_certbot_dns_provider is defined
+    and certbot_output is defined
+
+# Edge case: cert existed before this role was applied but TLS dir is not yet populated.
+# Invoke the hook directly so future renewals and this initial setup share the same code path.
+- name: PgBouncer Certbot | Run deploy hook to initialize TLS directory
+  ansible.builtin.command: /etc/letsencrypt/renewal-hooks/deploy/reload-pgbouncer.sh
+  register: hook_output
+  changed_when: hook_output.rc == 0
+  when: >-
+    letsencrypt_cert.stat.exists
+    and not pgbouncer_tls_cert.stat.exists
+    and pgbouncer_share_cert.state | default('master') == 'master'

@@ -1,0 +1,22 @@
+#!/bin/bash
+#### Ansible Managed Script ####
+# Syncs the pgbouncer TLS directory to all peer load-balancers after each
+# certificate renewal.  The hook is placed both in
+# renewal-hooks/deploy/ (triggered by certbot) and cron.weekly (safety net).
+# Peers must have rrsync installed and the master's SSH public key in
+# /root/.ssh/authorized_keys with: command="rrsync {{ pgbouncer_tls_dir }}"
+
+CERT_DIR="{{ pgbouncer_tls_dir }}/"
+REMOTE_USER="root"
+REMOTE_HOSTS=({% for peer in pgbouncer_share_cert.peers %}{{ peer }} {% endfor %})
+RSYNC_OPTIONS="-avz --delete"
+
+for HOST in "${REMOTE_HOSTS[@]}"; do
+    echo "Syncing certificates to ${HOST}..."
+    rsync ${RSYNC_OPTIONS} "${CERT_DIR}" "${REMOTE_USER}@[${HOST}]:"
+    if [ $? -eq 0 ]; then
+        echo "Certificates synced successfully to ${HOST}"
+    else
+        echo "Failed to sync certificates to ${HOST}" >&2
+    fi
+done

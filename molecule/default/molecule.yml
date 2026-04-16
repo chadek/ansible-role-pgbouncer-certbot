@@ -1,0 +1,86 @@
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: pgbouncer-simple
+    image: "geerlingguy/docker-debian12-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+    published_ports:
+      - "15432:6432" # manual test: psql -h localhost -p 15432 -U testuser testdb
+  - name: pgbouncer-tls-provided
+    image: "geerlingguy/docker-debian12-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+    published_ports:
+      - "15433:20185" # manual test: psql "host=localhost port=15433 sslmode=require" -U testuser testdb
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      roles_path: "$MOLECULE_PROJECT_DIRECTORY/.."
+  inventory:
+    host_vars:
+      pgbouncer-simple:
+        pgbouncer_conf:
+          databases:
+            testdb: "host=127.0.0.1 port=5432 dbname=testdb"
+          pgbouncer:
+            listen_addr: "*"
+            listen_port: 6432
+            auth_type: scram-sha-256
+            auth_file: /etc/pgbouncer/userlist.txt
+            admin_users: pgbouncer_admin
+            stats_users: pgbouncer_stats
+            pool_mode: session
+            max_client_conn: 100
+            default_pool_size: 20
+            server_reset_query: DISCARD ALL
+            logfile: /var/log/postgresql/pgbouncer.log
+            pidfile: /var/run/postgresql/pgbouncer.pid
+        pgbouncer_users:
+          - name: testuser
+            password: "correcthorsebatterystaple"
+      pgbouncer-tls-provided:
+        pgbouncer_tls_enabled: true
+        pgbouncer_tls_cert_mode: provided
+        pgbouncer_tls_server_ca_enabled: true
+        pgbouncer_tls_server_ca_mode: file
+        # pgbouncer_tls_server_ca_src and pgbouncer_tls_server_ca_remote_src
+        # are injected as facts in converge.yml after the PostgreSQL cert is generated.
+        pgbouncer_conf:
+          databases:
+            "*": "host=127.0.0.1 port=5432"
+          pgbouncer:
+            listen_addr: "0.0.0.0, ::"
+            listen_port: 20185
+            auth_type: scram-sha-256
+            auth_file: /etc/pgbouncer/userlist.txt
+            pool_mode: transaction
+            max_client_conn: 200
+            default_pool_size: 40
+            reserve_pool_size: 5
+            server_reset_query: DISCARD ALL
+            server_tls_sslmode: verify-full
+            server_tls_ca_file: /etc/pgbouncer/ssl/server-ca.pem
+            client_tls_sslmode: require
+            client_tls_cert_file: /etc/pgbouncer/ssl/fullchain.pem
+            client_tls_key_file: /etc/pgbouncer/ssl/privkey.pem
+            logfile: /var/log/postgresql/pgbouncer.log
+            pidfile: /var/run/postgresql/pgbouncer.pid
+            ignore_startup_parameters: "extra_float_digits, ssl_renegotiation_limit"
+        pgbouncer_users:
+          - name: testuser
+            password: "correcthorsebatterystaple"
+verifier:
+  name: ansible

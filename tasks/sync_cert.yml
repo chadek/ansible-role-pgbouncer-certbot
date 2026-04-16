@@ -1,0 +1,76 @@
+---
+- name: PgBouncer Sync | Generate SSH keypair on master
+  community.crypto.openssh_keypair:
+    path: /root/.ssh/id_ed25519
+    type: ed25519
+    state: present
+    owner: root
+    group: root
+    mode: '0600'
+  register: ssh_key
+  when: pgbouncer_share_cert.state == "master"
+
+- name: PgBouncer Sync | Retrieve master public key to role files directory
+  ansible.builtin.fetch:
+    src: /root/.ssh/id_ed25519.pub
+    dest: "{{ role_path }}/files/master_id_ed25519.pub"
+    flat: true
+  when: pgbouncer_share_cert.state == "master"
+
+- name: PgBouncer Sync | Create pgbouncer TLS directory on backup
+  ansible.builtin.file:
+    path: "{{ pgbouncer_tls_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0750'
+  when: pgbouncer_share_cert.state == "backup"
+
+- name: PgBouncer Sync | Authorize master key for cert sync on backup (rrsync to TLS dir)
+  ansible.builtin.blockinfile:
+    path: /root/.ssh/authorized_keys
+    create: true
+    mode: "0644"
+    block: |
+      command="rrsync {{ pgbouncer_tls_dir }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding {{ lookup('ansible.builtin.file', '{{ role_path }}/files/master_id_ed25519.pub') }}
+  when: pgbouncer_share_cert.state == "backup"
+
+- name: PgBouncer Sync | Permit root login by SSH key on backup
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin.*'
+    line: 'PermitRootLogin prohibit-password'
+    state: present
+    backrefs: true
+  when: pgbouncer_share_cert.state == "backup"
+  notify: Reload sshd
+
+- name: PgBouncer Sync | Add root to AllowUsers on backup
+  ansible.builtin.replace:
+    backup: true
+    dest: /etc/ssh/sshd_config
+    regexp: '^(AllowUsers(?!.*\broot\b).*)$'
+    replace: '\1 root'
+  when: pgbouncer_share_cert.state == "backup"
+  notify: Reload sshd
+
+# Backup reloads pgbouncer monthly to pick up the synced certificate.
+# The same hook template is used: it copies from /etc/letsencrypt/live/ if it exists
+# (master), or simply reloads if the cert was received via rsync (backup).
+- name: PgBouncer Sync | Deploy monthly pgbouncer reload cron on backup
+  ansible.builtin.template:
+    src: templates/reload-pgbouncer.j2
+    dest: /etc/cron.monthly/reload-pgbouncer
+    owner: root
+    group: root
+    mode: '0755'
+  when: pgbouncer_share_cert.state == "backup"
+
+- name: PgBouncer Sync | Deploy weekly cert sync cron on master
+  ansible.builtin.template:
+    src: templates/sync-certificates.j2
+    dest: /etc/cron.weekly/sync-certificates
+    owner: root
+    group: root
+    mode: '0755'
+  when: pgbouncer_share_cert.state == "master"
