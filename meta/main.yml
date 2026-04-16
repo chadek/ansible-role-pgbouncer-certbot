@@ -1,17 +1,18 @@
 galaxy_info:
   role_name: pgbouncer_certbot
-  author: fabrice
+  author: chadek
   description: >
     Install pgbouncer, deploy its configuration via a template, and manage
     TLS certificates either provided by the user or generated via certbot
     DNS-01 challenges (OVH, Cloudflare, Route53, …).  Includes optional
     certificate synchronisation to peer load-balancers.
-  license: MIT
+  license: license GPL-3.0-only
   min_ansible_version: "2.9"
   platforms:
     - name: Debian
       versions:
         - bookworm
+        - trixie
     - name: Ubuntu
       versions:
         - noble
