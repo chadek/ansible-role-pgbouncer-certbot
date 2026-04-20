@@ -1,14 +1,14 @@
 ---
-- name: PgBouncer | Include sync_cert.yml
-  ansible.builtin.include_tasks: sync_cert.yml
-  when: pgbouncer_share_cert is defined
-
 - name: PgBouncer | Include pgbouncer_install.yml
   ansible.builtin.include_tasks: pgbouncer_install.yml
 
 - name: PgBouncer | Include certbot_dns_install.yml
   ansible.builtin.include_tasks: certbot_dns_install.yml
   when: pgbouncer_tls_enabled and pgbouncer_tls_cert_mode == 'certbot'
+
+- name: PgBouncer | Include sync_cert.yml
+  ansible.builtin.include_tasks: sync_cert.yml
+  when: pgbouncer_share_cert is defined
 
 - name: PgBouncer | Ensure pgbouncer is started and enabled
   ansible.builtin.systemd:
